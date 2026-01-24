@@ -18,7 +18,7 @@ from datetime import datetime
 
 API_ID = 20451896
 API_HASH = "cfd7e7c339c9e2da0027d691da18588e"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dalnopoolnilnet.beget.app/webhook-test/telethon")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dalnopoolnilnet.beget.app/webhook/telethon")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 # Хранилище: имя → клиент
@@ -930,6 +930,7 @@ async def get_chat_history(req: GetChatHistoryReq):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("telegram_bot:app", host="0.0.0.0", port=port, reload=False)
+
 
 
 
