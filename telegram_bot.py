@@ -4,10 +4,11 @@ import asyncio
 import requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import PeerUser, PeerChannel, PeerChat
-from telethon.tl.functions.messages import GetDialogsRequest, GetDialogFiltersRequest
+from telethon.tl.types import PeerUser, PeerChannel, PeerChat, User, Channel, Chat, InputPhoneContact
+from telethon.tl.functions.messages import GetDialogsRequest, GetDialogFiltersRequest, GetFullChatRequest
 from telethon.tl.functions.contacts import ImportContactsRequest, DeleteContactsRequest
-from telethon.tl.types import InputPhoneContact
+from telethon.tl.functions.users import GetFullUserRequest
+from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.errors import SessionPasswordNeededError, FloodWaitError, PhoneNumberInvalidError, UserPrivacyRestrictedError
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, validator
@@ -15,6 +16,10 @@ from contextlib import asynccontextmanager
 from typing import List, Optional, Union, Dict
 import uvicorn
 from datetime import datetime
+from telethon.tl.functions.users import GetFullUserRequest
+from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import GetFullChatRequest
+from telethon.tl.types import User, Channel, Chat
 
 API_ID = 20451896
 API_HASH = "cfd7e7c339c9e2da0027d691da18588e"
@@ -132,6 +137,80 @@ class AddContactReq(BaseModel):
     phone: str
     first_name: str = "Contact"
     last_name: str = ""
+
+
+class EntityInfoReq(BaseModel):
+    account: str
+    target: str | int
+
+
+class MultiEntityInfoReq(BaseModel):
+    account: str
+    targets: List[str | int]
+
+
+class UserInfo(BaseModel):
+    id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    about: Optional[str] = None
+    is_bot: bool = False
+    is_premium: bool = False
+    is_verified: bool = False
+    is_restricted: bool = False
+    is_scam: bool = False
+    is_deleted: bool = False
+
+
+class ChatInfo(BaseModel):
+    id: int
+    title: str
+    username: Optional[str] = None
+    about: Optional[str] = None
+    is_group: bool = False
+    is_channel: bool = False
+    participants_count: Optional[int] = None
+    admins_count: Optional[int] = None
+    online_count: Optional[int] = None
+
+# ==================== НОВАЯ МОДЕЛЬ: получение информации описания группы/био ====================
+class EntityInfoReq(BaseModel):
+    account: str                 # имя аккаунта из /accounts
+    target: str | int            # username (@channel), id или phone (для user по желанию)
+
+
+class MultiEntityInfoReq(BaseModel):
+    account: str
+    targets: List[str | int]
+
+
+class UserInfo(BaseModel):
+    id: int
+    username: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    about: Optional[str] = None
+    is_bot: bool = False
+    is_premium: bool = False
+    is_verified: bool = False
+    is_restricted: bool = False
+    is_scam: bool = False
+    is_deleted: bool = False
+
+
+class ChatInfo(BaseModel):
+    id: int
+    title: str
+    username: Optional[str] = None
+    about: Optional[str] = None
+    is_group: bool = False
+    is_channel: bool = False
+    participants_count: Optional[int] = None
+    admins_count: Optional[int] = None
+    online_count: Optional[int] = None
 
 # ==================== Вспомогательные функции ====================
 def extract_folder_title(folder_obj):
@@ -849,6 +928,147 @@ async def get_all_folders(account: str):
         raise HTTPException(500, detail=f"Ошибка получения папок: {str(e)}")
 
 
+@app.post("/entity_info")
+async def get_entity_info(req: EntityInfoReq):
+    """
+    Получить описание пользователя или группы/канала.
+    target может быть username (@channel / @user), числовым id.
+    """
+    client = ACTIVE_CLIENTS.get(req.account)
+    if not client:
+        raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
+
+    target = req.target
+    if isinstance(target, str):
+        t = target.strip()
+        if t.startswith('@'):
+            t = t[1:]
+        if t.lstrip('-').isdigit():
+            target = int(t)
+        else:
+            target = t
+
+    try:
+        entity = await client.get_entity(target)
+    except Exception as e:
+        raise HTTPException(400, detail=f"Не удалось найти объект по идентификатору '{req.target}': {str(e)}")
+
+    if isinstance(entity, User):
+        full = await client(GetFullUserRequest(entity.id))
+        fu = full.full_user
+
+        user_info = UserInfo(
+            id=entity.id,
+            username=getattr(entity, "username", None),
+            first_name=getattr(entity, "first_name", None),
+            last_name=getattr(entity, "last_name", None),
+            phone=getattr(entity, "phone", None),
+            about=getattr(fu, "about", None),
+            is_bot=getattr(entity, "bot", False),
+            is_premium=getattr(entity, "premium", False),
+            is_verified=getattr(entity, "verified", False),
+            is_restricted=getattr(entity, "restricted", False),
+            is_scam=getattr(entity, "scam", False),
+            is_deleted=getattr(entity, "deleted", False),
+        )
+
+        return {
+            "status": "success",
+            "type": "user",
+            "account": req.account,
+            "target": req.target,
+            "data": user_info,
+        }
+
+    if isinstance(entity, Channel):
+        full = await client(GetFullChannelRequest(entity))
+        fc = full.full_chat
+
+        chat_info = ChatInfo(
+            id=entity.id,
+            title=getattr(entity, "title", "") or "Без названия",
+            username=getattr(entity, "username", None),
+            about=getattr(fc, "about", None),
+            is_group=bool(getattr(entity, "megagroup", False) or getattr(entity, "gigagroup", False)),
+            is_channel=bool(getattr(entity, "broadcast", False)),
+            participants_count=getattr(fc, "participants_count", None),
+            admins_count=getattr(fc, "admins_count", None),
+            online_count=getattr(fc, "online_count", None),
+        )
+
+        return {
+            "status": "success",
+            "type": "channel",
+            "account": req.account,
+            "target": req.target,
+            "data": chat_info,
+        }
+
+    if isinstance(entity, Chat):
+        full = await client(GetFullChatRequest(entity.id))
+        fc = full.full_chat
+
+        chat_info = ChatInfo(
+            id=entity.id,
+            title=getattr(entity, "title", "") or "Без названия",
+            username=None,
+            about=getattr(fc, "about", None),
+            is_group=True,
+            is_channel=False,
+            participants_count=getattr(fc, "participants_count", None),
+            admins_count=getattr(fc, "admins_count", None),
+            online_count=getattr(fc, "online_count", None),
+        )
+
+        return {
+            "status": "success",
+            "type": "chat",
+            "account": req.account,
+            "target": req.target,
+            "data": chat_info,
+        }
+
+    raise HTTPException(400, detail=f"Тип объекта не поддерживается: {type(entity).__name__}")
+
+
+@app.post("/entities_info")
+async def get_entities_info(req: MultiEntityInfoReq):
+    """
+    Получить описания сразу для нескольких сущностей (users / группы / каналы).
+    """
+    results: List[Dict] = []
+
+    for target in req.targets:
+        try:
+            info = await get_entity_info(EntityInfoReq(account=req.account, target=target))
+            results.append({
+                "target": target,
+                "ok": True,
+                "data": info,
+            })
+        except HTTPException as e:
+            results.append({
+                "target": target,
+                "ok": False,
+                "status_code": e.status_code,
+                "error": e.detail,
+            })
+        except Exception as e:
+            results.append({
+                "target": target,
+                "ok": False,
+                "status_code": 500,
+                "error": str(e),
+            })
+
+    return {
+        "status": "success",
+        "account": req.account,
+        "total": len(results),
+        "results": results,
+    }
+
+
 @app.post("/chat_history")
 async def get_chat_history(req: GetChatHistoryReq):
     client = ACTIVE_CLIENTS.get(req.account)
@@ -930,8 +1150,6 @@ async def get_chat_history(req: GetChatHistoryReq):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("telegram_bot:app", host="0.0.0.0", port=port, reload=False)
-
-
 
 
 
