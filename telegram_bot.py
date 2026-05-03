@@ -23,7 +23,7 @@ from telethon.tl.types import User, Channel, Chat
 
 API_ID = 20451896
 API_HASH = "cfd7e7c339c9e2da0027d691da18588e"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dalnopoolnilnet.beget.app/webhook-test/telethon")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://bma7144.store/webhook-test/telethon")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 # Хранилище: имя → клиент
