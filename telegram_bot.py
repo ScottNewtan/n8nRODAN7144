@@ -126,6 +126,11 @@ class GetChatHistoryReq(BaseModel):
 class GetAccountStatusReq(BaseModel):
     account: str
 
+# ==================== НОВАЯ МОДЕЛЬ: статус произвольного пользователя ====================
+class GetUserStatusReq(BaseModel):
+    account: str
+    target: str | int
+
 # ==================== НОВАЯ МОДЕЛЬ: отправка новым пользователям ====================
 class SendToNewUserReq(BaseModel):
     account: str
@@ -581,6 +586,57 @@ async def account_status(req: GetAccountStatusReq):
         }
     except Exception as e:
         raise HTTPException(500, detail=f"Ошибка получения статуса: {str(e)}")
+
+
+@app.post("/users/status")
+async def user_status(req: GetUserStatusReq):
+    """
+    Получить статус онлайна/последний онлайн для пользователя (наблюдаемого аккаунта)
+    через подключенный аккаунт-наблюдатель (req.account).
+
+    target: username (@user), числовой id, либо строка с номером телефона (если доступно).
+    """
+    client = ACTIVE_CLIENTS.get(req.account)
+    if not client:
+        raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
+
+    target = req.target
+    if isinstance(target, str):
+        t = target.strip()
+        if t.startswith("@"):
+            t = t[1:]
+        if t.lstrip("-").isdigit():
+            target = int(t)
+        else:
+            target = t
+
+    try:
+        entity = await client.get_entity(target)
+    except Exception as e:
+        raise HTTPException(400, detail=f"Не удалось найти пользователя '{req.target}': {str(e)}")
+
+    if not isinstance(entity, User):
+        raise HTTPException(400, detail=f"target должен указывать на пользователя, получено: {type(entity).__name__}")
+
+    status_obj = getattr(entity, "status", None)
+    status_type = status_obj.__class__.__name__ if status_obj is not None else None
+    was_online = getattr(status_obj, "was_online", None)
+
+    return {
+        "status": "success",
+        "observer_account": req.account,
+        "target": req.target,
+        "user": {
+            "id": getattr(entity, "id", None),
+            "username": getattr(entity, "username", None),
+            "first_name": getattr(entity, "first_name", None),
+            "last_name": getattr(entity, "last_name", None),
+        },
+        "presence": {
+            "type": status_type,
+            "was_online": was_online.isoformat() if was_online else None,
+        },
+    }
 
 
 # ==================== НОВЫЙ ЭНДПОИНТ: Отправка сообщения новому пользователю ====================
