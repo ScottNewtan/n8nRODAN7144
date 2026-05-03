@@ -1,4 +1,4 @@
-# telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
+    # telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
 import os
 import asyncio
 import requests
@@ -121,6 +121,10 @@ class GetChatHistoryReq(BaseModel):
     chat_id: Union[str, int]
     limit: int = 50
     offset_id: Optional[int] = None
+
+# ==================== НОВАЯ МОДЕЛЬ: статус подключенного аккаунта ====================
+class GetAccountStatusReq(BaseModel):
+    account: str
 
 # ==================== НОВАЯ МОДЕЛЬ: отправка новым пользователям ====================
 class SendToNewUserReq(BaseModel):
@@ -541,6 +545,42 @@ async def remove_account(name: str):
 @app.get("/accounts")
 def list_accounts():
     return {"active_accounts": list(ACTIVE_CLIENTS.keys())}
+
+
+@app.post("/accounts/status")
+async def account_status(req: GetAccountStatusReq):
+    """
+    Получить статус "онлайн/оффлайн/недавно/..." для подключенного аккаунта.
+
+    Важно: для "самого себя" Telegram часто возвращает Online пока клиент подключен,
+    а точное "последний раз был(а) в сети" может быть недоступно.
+    """
+    client = ACTIVE_CLIENTS.get(req.account)
+    if not client:
+        raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
+
+    try:
+        me = await client.get_me()
+        status_obj = getattr(me, "status", None)
+        status_type = status_obj.__class__.__name__ if status_obj is not None else None
+        was_online = getattr(status_obj, "was_online", None)
+
+        return {
+            "status": "success",
+            "account": req.account,
+            "me": {
+                "id": getattr(me, "id", None),
+                "username": getattr(me, "username", None),
+                "first_name": getattr(me, "first_name", None),
+                "last_name": getattr(me, "last_name", None),
+            },
+            "presence": {
+                "type": status_type,
+                "was_online": was_online.isoformat() if was_online else None,
+            },
+        }
+    except Exception as e:
+        raise HTTPException(500, detail=f"Ошибка получения статуса: {str(e)}")
 
 
 # ==================== НОВЫЙ ЭНДПОИНТ: Отправка сообщения новому пользователю ====================
