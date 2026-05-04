@@ -1191,11 +1191,11 @@ async def get_chat_history(req: GetChatHistoryReq):
             else:
                 raise HTTPException(400, detail=f"Не удалось найти чат: {req.chat_id}")
         
-       kwargs = {"limit": req.limit}
+    kwargs = {"limit": req.limit}
         if req.offset_id is not None and req.offset_id > 0:
             kwargs["offset_id"] = req.offset_id
         
-        messages = await client.get_messages(chat, **kwargs)
+    messages = await client.get_messages(chat, **kwargs)
         
         message_list = []
         for msg in messages:
