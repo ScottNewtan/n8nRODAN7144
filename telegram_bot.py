@@ -1,4 +1,4 @@
-    # telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
+# telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
 import os
 import asyncio
 import requests
@@ -1191,11 +1191,11 @@ async def get_chat_history(req: GetChatHistoryReq):
             else:
                 raise HTTPException(400, detail=f"Не удалось найти чат: {req.chat_id}")
         
-    kwargs = {"limit": req.limit}
+        kwargs = {"limit": req.limit}
         if req.offset_id is not None and req.offset_id > 0:
             kwargs["offset_id"] = req.offset_id
-        
-    messages = await client.get_messages(chat, **kwargs)
+
+        messages = await client.get_messages(chat, **kwargs)
         
         message_list = []
         for msg in messages:
@@ -1246,6 +1246,3 @@ async def get_chat_history(req: GetChatHistoryReq):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("telegram_bot:app", host="0.0.0.0", port=port, reload=False)
-
-
-
