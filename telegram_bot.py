@@ -2,6 +2,7 @@
 import os
 import asyncio
 import requests
+import re
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.types import PeerUser, PeerChannel, PeerChat, User, Channel, Chat, InputPhoneContact
@@ -10,7 +11,8 @@ from telethon.tl.functions.contacts import ImportContactsRequest, DeleteContacts
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.errors import SessionPasswordNeededError, FloodWaitError, PhoneNumberInvalidError, UserPrivacyRestrictedError
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, validator
 from contextlib import asynccontextmanager
 from typing import List, Optional, Union, Dict
@@ -25,6 +27,7 @@ API_ID = 20451896
 API_HASH = "cfd7e7c339c9e2da0027d691da18588e"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://bma7144.store/webhook-test/telethon")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+MEDIA_DIR = os.getenv("MEDIA_DIR", "./media")
 
 # Хранилище: имя → клиент
 ACTIVE_CLIENTS = {}
@@ -105,6 +108,8 @@ class ChatMessage(BaseModel):
     is_outgoing: bool
     has_media: bool = False
     media_type: Optional[str] = None
+    media_url: Optional[str] = None
+    media_rel_path: Optional[str] = None
     
     @validator('from_id', pre=True)
     def parse_from_id(cls, v):
@@ -124,6 +129,7 @@ class GetChatHistoryReq(BaseModel):
     limit: int = 50
     offset_id: Optional[int] = None
     include_media: bool = False
+    download_media: bool = False
 
 # ==================== НОВАЯ МОДЕЛЬ: статус подключенного аккаунта ====================
 class GetAccountStatusReq(BaseModel):
@@ -323,6 +329,10 @@ async def get_dialogs_with_folders_info(client: TelegramClient, limit: int = 50)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Telegram Multi Gateway запущен")
+    try:
+        os.makedirs(MEDIA_DIR, exist_ok=True)
+    except Exception as e:
+        print(f"Не удалось создать MEDIA_DIR={MEDIA_DIR}: {e}")
     yield
     for client in ACTIVE_CLIENTS.values():
         await client.disconnect()
@@ -330,6 +340,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Telegram Multi Account Gateway", lifespan=lifespan)
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
 
 # ==================== Webhook управление ====================
@@ -1168,8 +1179,15 @@ async def get_entities_info(req: MultiEntityInfoReq):
     }
 
 
+def _safe_segment(value: str) -> str:
+    value = (value or "").strip()
+    value = re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
+    value = value.strip("._-")
+    return value or "file"
+
+
 @app.post("/chat_history")
-async def get_chat_history(req: GetChatHistoryReq):
+async def get_chat_history(req: GetChatHistoryReq, request: Request):
     client = ACTIVE_CLIENTS.get(req.account)
     if not client:
         raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
@@ -1217,6 +1235,37 @@ async def get_chat_history(req: GetChatHistoryReq):
             if not text and not has_media:
                 continue
             
+            media_url = None
+            media_rel_path = None
+
+            if req.include_media and req.download_media and has_media:
+                try:
+                    chat_seg = _safe_segment(str(req.chat_id))
+                    acc_seg = _safe_segment(req.account)
+                    rel_dir = os.path.join(acc_seg, chat_seg)
+                    abs_dir = os.path.join(MEDIA_DIR, rel_dir)
+                    os.makedirs(abs_dir, exist_ok=True)
+
+                    original_name = None
+                    try:
+                        original_name = getattr(getattr(msg, "file", None), "name", None)
+                    except Exception:
+                        original_name = None
+
+                    name_seg = _safe_segment(original_name) if original_name else "media"
+                    filename = f"msg_{msg.id}_{name_seg}"
+                    abs_path = os.path.join(abs_dir, filename)
+
+                    downloaded_path = await client.download_media(msg, file=abs_path)
+                    if downloaded_path:
+                        media_rel_path = os.path.relpath(str(downloaded_path), MEDIA_DIR)
+                        base = str(request.base_url).rstrip("/")
+                        media_url = f"{base}/media/{media_rel_path.replace(os.sep, '/')}"
+                except Exception:
+                    # медиа не критично для истории
+                    media_url = None
+                    media_rel_path = None
+
             message = ChatMessage(
                 id=msg.id,
                 date=msg.date.isoformat() if msg.date else "",
@@ -1225,6 +1274,8 @@ async def get_chat_history(req: GetChatHistoryReq):
                 is_outgoing=msg.out if hasattr(msg, 'out') else False,
                 has_media=has_media if req.include_media else False,
                 media_type=media_type if req.include_media else None,
+                media_url=media_url,
+                media_rel_path=media_rel_path,
             )
             message_list.append(message)
         
