@@ -1,4 +1,4 @@
-    # telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
+# telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
 import os
 import asyncio
 import requests
@@ -131,6 +131,7 @@ class GetChatHistoryReq(BaseModel):
     limit: int = 50
     offset_id: Optional[int] = None
     include_media: bool = False
+    thread_id: Optional[int] = None
 
 # ==================== НОВАЯ МОДЕЛЬ: статус подключенного аккаунта ====================
 class GetAccountStatusReq(BaseModel):
@@ -242,6 +243,64 @@ def extract_folder_title(folder_obj):
     elif isinstance(title_obj, str):
         return title_obj
     return None
+
+
+def parse_tme_link(value):
+    """
+    Разбирает ссылки вида:
+      - https://t.me/c/2019152955/62657  → (channel_id_with_-100, message_id)
+      - https://t.me/c/2019152955        → (channel_id_with_-100, None)
+      - https://t.me/username/123        → ("username", 123)
+      - https://t.me/username            → ("username", None)
+    Возвращает (chat_id, message_id) или None если не ссылка.
+    """
+    if not isinstance(value, str):
+        return None
+    m = re.match(
+        r'https?://t\.me/c/(\d+)(?:/(\d+))?',
+        value.strip()
+    )
+    if m:
+        # Приватная группа/канал: добавляем -100 префикс
+        raw_id = int(m.group(1))
+        channel_id = int(f"-100{raw_id}")
+        msg_id = int(m.group(2)) if m.group(2) else None
+        return (channel_id, msg_id)
+
+    m = re.match(
+        r'https?://t\.me/([a-zA-Z_][a-zA-Z0-9_]*)(?:/(\d+))?',
+        value.strip()
+    )
+    if m:
+        username = m.group(1)
+        msg_id = int(m.group(2)) if m.group(2) else None
+        return (username, msg_id)
+
+    return None
+
+
+def resolve_chat_id(raw_value):
+    """
+    Универсальный резолвер chat_id.
+    Принимает: t.me ссылку, @username, числовой id (str/int).
+    Возвращает (chat_id, message_id | None).
+    """
+    if isinstance(raw_value, int):
+        return (raw_value, None)
+
+    if isinstance(raw_value, str):
+        parsed = parse_tme_link(raw_value)
+        if parsed:
+            return parsed
+
+        t = raw_value.strip()
+        if t.startswith('@'):
+            t = t[1:]
+        if t.lstrip('-').isdigit():
+            return (int(t), None)
+        return (t, None)
+
+    return (raw_value, None)
 
 
 async def get_dialogs_with_folders_info(client: TelegramClient, limit: int = 50) -> List[DialogInfo]:
@@ -610,15 +669,7 @@ async def user_status(req: GetUserStatusReq):
     if not client:
         raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
 
-    target = req.target
-    if isinstance(target, str):
-        t = target.strip()
-        if t.startswith("@"):
-            t = t[1:]
-        if t.lstrip("-").isdigit():
-            target = int(t)
-        else:
-            target = t
+    target, _ = resolve_chat_id(req.target)
 
     try:
         entity = await client.get_entity(target)
@@ -884,8 +935,16 @@ async def send_message(req: SendMessageReq):
         raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
 
     try:
-        await client.send_message(req.chat_id, req.text)
-        return {"status": "sent", "from": req.account, "to": req.chat_id}
+        chat_id, msg_id = resolve_chat_id(req.chat_id)
+        entity = await client.get_entity(chat_id)
+
+        if msg_id:
+            # Ответ на конкретное сообщение
+            await client.send_message(entity, req.text, reply_to=msg_id)
+        else:
+            await client.send_message(entity, req.text)
+
+        return {"status": "sent", "from": req.account, "to": str(req.chat_id)}
     except Exception as e:
         raise HTTPException(500, detail=f"Ошибка отправки: {str(e)}")
 
@@ -897,7 +956,8 @@ async def export_members(req: ExportMembersReq):
         raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
 
     try:
-        group = await client.get_entity(req.group)
+        group_id, _ = resolve_chat_id(req.group)
+        group = await client.get_entity(group_id)
         participants = await client.get_participants(group, aggressive=True)
 
         members = []
@@ -1044,15 +1104,7 @@ async def get_entity_info(req: EntityInfoReq):
     if not client:
         raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
 
-    target = req.target
-    if isinstance(target, str):
-        t = target.strip()
-        if t.startswith('@'):
-            t = t[1:]
-        if t.lstrip('-').isdigit():
-            target = int(t)
-        else:
-            target = t
+    target, _ = resolve_chat_id(req.target)
 
     try:
         entity = await client.get_entity(target)
@@ -1191,15 +1243,7 @@ async def media_proxy(account: str, chat_id: str, message_id: int):
     if not client:
         raise HTTPException(400, detail=f"Аккаунт не найден: {account}")
 
-    target: str | int = chat_id
-    if isinstance(target, str):
-        t = target.strip()
-        if t.startswith("@"):
-            t = t[1:]
-        if t.lstrip("-").isdigit():
-            target = int(t)
-        else:
-            target = t
+    target, _ = resolve_chat_id(chat_id)
 
     try:
         chat = await client.get_entity(target)
@@ -1242,13 +1286,7 @@ async def get_chat_history(req: GetChatHistoryReq, request: Request):
         raise HTTPException(400, detail=f"Аккаунт не найден: {req.account}")
 
     try:
-        chat_id = req.chat_id
-        
-        if isinstance(chat_id, str):
-            if chat_id.startswith('@'):
-                chat_id = chat_id[1:]
-            if chat_id.lstrip('-').isdigit():
-                chat_id = int(chat_id)
+        chat_id, linked_msg_id = resolve_chat_id(req.chat_id)
         
         try:
             chat = await client.get_entity(chat_id)
@@ -1264,6 +1302,11 @@ async def get_chat_history(req: GetChatHistoryReq, request: Request):
         kwargs = {"limit": req.limit}
         if req.offset_id is not None and req.offset_id > 0:
             kwargs["offset_id"] = req.offset_id
+
+        # thread_id: явный параметр приоритетнее, иначе берём из ссылки
+        thread_id = req.thread_id or linked_msg_id
+        if thread_id:
+            kwargs["reply_to"] = thread_id
 
         messages = await client.get_messages(chat, **kwargs)
         
@@ -1340,6 +1383,3 @@ async def get_chat_history(req: GetChatHistoryReq, request: Request):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("telegram_bot:app", host="0.0.0.0", port=port, reload=False)
-
-
-
