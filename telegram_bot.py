@@ -1,4 +1,4 @@
-# telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
+    # telegram_bot.py — Мультиаккаунт + экспорт участников группы + мгновенная работа с любыми ID
 import os
 import asyncio
 import requests
@@ -103,6 +103,8 @@ class ChatMessage(BaseModel):
     from_id: Optional[int] = None
     text: str
     is_outgoing: bool
+    has_media: bool = False
+    media_type: Optional[str] = None
     
     @validator('from_id', pre=True)
     def parse_from_id(cls, v):
@@ -121,6 +123,7 @@ class GetChatHistoryReq(BaseModel):
     chat_id: Union[str, int]
     limit: int = 50
     offset_id: Optional[int] = None
+    include_media: bool = False
 
 # ==================== НОВАЯ МОДЕЛЬ: статус подключенного аккаунта ====================
 class GetAccountStatusReq(BaseModel):
@@ -1208,7 +1211,10 @@ async def get_chat_history(req: GetChatHistoryReq):
             elif hasattr(msg, 'message') and msg.message:
                 text = msg.message
             
-            if not text and not hasattr(msg, 'media'):
+            has_media = hasattr(msg, 'media') and msg.media is not None
+            media_type = msg.media.__class__.__name__ if has_media else None
+            
+            if not text and not has_media:
                 continue
             
             message = ChatMessage(
@@ -1216,7 +1222,9 @@ async def get_chat_history(req: GetChatHistoryReq):
                 date=msg.date.isoformat() if msg.date else "",
                 from_id=None,
                 text=text,
-                is_outgoing=msg.out if hasattr(msg, 'out') else False
+                is_outgoing=msg.out if hasattr(msg, 'out') else False,
+                has_media=has_media if req.include_media else False,
+                media_type=media_type if req.include_media else None,
             )
             message_list.append(message)
         
@@ -1246,3 +1254,6 @@ async def get_chat_history(req: GetChatHistoryReq):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("telegram_bot:app", host="0.0.0.0", port=port, reload=False)
+
+
+
